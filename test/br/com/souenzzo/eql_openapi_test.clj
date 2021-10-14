@@ -13,6 +13,11 @@
     io/reader
     (json/read)))
 
+(def v2-petstore
+  (-> (io/file "OpenAPI-Specification" "examples" "v2.0" "json" "petstore.json")
+    io/reader
+    (json/read)))
+
 (def v3-petstore-expanded
   (-> (io/file "OpenAPI-Specification" "examples" "v3.0" "petstore-expanded.json")
     io/reader
@@ -81,6 +86,14 @@
         eql/ast->query
         #_(doto pp/pprint)
         (= [:id :name :tag]))))
+
+
+(deftest petstore-old
+  (is (-> (eql-openapi/schema-or-reference->ast v2-petstore ($ref :definitions :Pet))
+        eql/ast->query
+        #_(doto pp/pprint)
+        (= [:id :name :tag]))))
+
 
 (deftest petstore-expanded
   (is (-> (eql-openapi/schema-or-reference->ast v3-petstore-expanded {"$ref" "#/components/schemas/Pet"})
