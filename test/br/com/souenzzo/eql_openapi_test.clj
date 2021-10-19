@@ -5,7 +5,10 @@
             [clojure.data.json :as json]
             [clojure.pprint :as pp]
             [edn-query-language.core :as eql]
-            [clojure.string :as string])
+            [clojure.test.check.clojure-test :refer [defspec]]
+            [clojure.test.check.properties :as prop]
+            [clojure.string :as string]
+            [clojure.test.check.generators :as gen])
   (:import (java.net URI)))
 
 (def v3-petstore
@@ -110,3 +113,7 @@
         (= [:code :message])))
   #_(pp/pprint (eql-openapi/dereference v3-petstore-expanded {"$ref" "#/components/schemas/Pets"})))
 
+(defspec escape->unescape-identity-prop
+  1e3
+  (prop/for-all [s gen/string]
+    (= s (eql-openapi/unescape (eql-openapi/escape s)))))
