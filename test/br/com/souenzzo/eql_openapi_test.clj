@@ -237,3 +237,69 @@
   1e3
   (prop/for-all [s gen/string]
     (= s (eql-openapi/unescape (eql-openapi/escape s)))))
+
+(deftest operations
+  (is (= [{"operationId"               "listPets"
+           "responses"                 {"200"     {"description" "A paged array of pets"
+                                                   "headers"     {"x-next"
+                                                                  {"description" "A link to the next page of responses"
+                                                                   "schema"      {"type" "string"}}}
+                                                   "content"     {"application/json"
+                                                                  {"schema" {"$ref" "#/components/schemas/Pets"}}}}
+                                        "default" {"description" "unexpected error"
+                                                   "content"     {"application/json"
+                                                                  {"schema" {"$ref" "#/components/schemas/Error"}}}}}
+           "tags"                      ["pets"]
+           "summary"                   "List all pets"
+           "parameters"                [{"name"        "limit"
+                                         "in"          "query"
+                                         "description" "How many items to return at one time (max 100)"
+                                         "required"    false
+                                         "schema"      {"type" "integer", "format" "int32"}}]
+           ::eql-openapi/path-item-ref "#/paths/~1pets"
+           ::eql-openapi/operation-ref "#/paths/~1pets/get"
+           ::eql-openapi/path          "/pets"
+           ::eql-openapi/parameters    [{"name"        "limit"
+                                         "in"          "query"
+                                         "description" "How many items to return at one time (max 100)"
+                                         "required"    false
+                                         "schema"      {"type" "integer", "format" "int32"}}]
+           ::eql-openapi/method        "get"}
+          {"operationId"               "createPets"
+           "responses"                 {"201"     {"description" "Null response"}
+                                        "default" {"description" "unexpected error"
+                                                   "content"
+                                                                 {"application/json"
+                                                                  {"schema" {"$ref" "#/components/schemas/Error"}}}}}
+           "tags"                      ["pets"]
+           "summary"                   "Create a pet"
+           ::eql-openapi/parameters    []
+           ::eql-openapi/method        "post"
+           ::eql-openapi/operation-ref "#/paths/~1pets/post"
+           ::eql-openapi/path-item-ref "#/paths/~1pets"
+           ::eql-openapi/path          "/pets"}
+          {"operationId"               "showPetById"
+           "responses"                 {"200"     {"description" "Expected response to a valid request"
+                                                   "content"     {"application/json"
+                                                                  {"schema" {"$ref" "#/components/schemas/Pet"}}}}
+                                        "default" {"description" "unexpected error"
+                                                   "content"     {"application/json"
+                                                                  {"schema" {"$ref" "#/components/schemas/Error"}}}}}
+           "tags"                      ["pets"]
+           "summary"                   "Info for a specific pet"
+           "parameters"                [{"name"        "petId"
+                                         "in"          "path"
+                                         "required"    true
+                                         "description" "The id of the pet to retrieve"
+                                         "schema"      {"type" "string"}}]
+           ::eql-openapi/operation-ref "#/paths/~1pets~1{petId}/get"
+           ::eql-openapi/path-item-ref "#/paths/~1pets~1{petId}"
+           ::eql-openapi/path          "/pets/{petId}"
+           ::eql-openapi/parameters    [{"name"        "petId"
+                                         "in"          "path"
+                                         "required"    true
+                                         "description" "The id of the pet to retrieve"
+                                         "schema"      {"type" "string"}}]
+           ::eql-openapi/method        "get"}]
+        (-> (eql-openapi/operations v3-petstore)
+          #_#_vec (doto pp/pprint)))))
