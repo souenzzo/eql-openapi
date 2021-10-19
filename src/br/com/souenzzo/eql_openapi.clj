@@ -49,40 +49,48 @@
 
 (defn swagger->ast
   [swagger schema-or-reference]
-  (let [{:strs [properties]} (dereference swagger schema-or-reference)]
-    (if-not properties
-      {:type :root}
-      {:type     :root
-       :children (mapv (fn [[k v]]
-                         (let [k (keyword k)
-                               {:keys [children]
-                                :as   node} (swagger->ast swagger v)]
-                           (assoc node
-                             :type (if children :join :props)
-                             :dispatch-key k
-                             :key k)))
-                   properties)})))
+  (let [{:strs [properties type items allOf]
+         :as   schema} (dereference swagger schema-or-reference)
+        node (cond (map? properties)
+                   {:type     :root
+                    :children (mapv (fn [[property v]]
+                                      (let [k (keyword property)
+                                            {:keys [children]
+                                             :as   node} (swagger->ast swagger v)]
+                                        (assoc node
+                                          :type (if children :join :props)
+                                          :dispatch-key k
+                                          :key k)))
+                                properties)}
+                   (= type "array")
+                   (swagger->ast swagger items)
+                   :else (reduce eql/merge-asts {:type :root}
+                           (map (partial swagger->ast swagger) allOf)))]
+    (assoc node
+      :meta schema)))
 
 (defn schema-or-reference->ast
   [openapi schema-or-reference]
   (if (= "2.0" (get openapi "swagger"))
     (swagger->ast openapi schema-or-reference)
     (let [{:strs [type properties required items allOf]
-           :as   schema} (dereference openapi schema-or-reference)]
-      (case type
-        "object" {:type     :root
-                  :children (mapv (fn [[k v]]
-                                    (let [k (keyword k)
-                                          {:keys [children]
-                                           :as   node} (schema-or-reference->ast openapi v)]
-                                      (assoc node
-                                        :type (if children :join :props)
-                                        :dispatch-key k
-                                        :key k)))
-                              properties)}
-        "array" (schema-or-reference->ast openapi items)
-        (reduce eql/merge-asts {:type :root}
-          (map (partial schema-or-reference->ast openapi) allOf))))))
+           :as   schema} (dereference openapi schema-or-reference)
+          node (case type
+                 "object" {:type     :root
+                           :children (mapv (fn [[property v]]
+                                             (let [k (keyword property)
+                                                   {:keys [children]
+                                                    :as   node} (schema-or-reference->ast openapi v)]
+                                               (assoc node
+                                                 :type (if children :join :props)
+                                                 :dispatch-key k
+                                                 :key k)))
+                                       properties)}
+                 "array" (schema-or-reference->ast openapi items)
+                 (reduce eql/merge-asts {:type :root}
+                   (map (partial schema-or-reference->ast openapi) allOf)))]
+      (assoc node
+        :meta schema))))
 
 (s/fdef schema-or-reference->ast
   :args (s/cat :openapi ::openapi

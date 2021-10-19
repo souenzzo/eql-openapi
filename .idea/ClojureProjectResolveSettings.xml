@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ClojureProjectResolveSettings">
+    <item key="clojure.test.check.properties/for-all" resolves-as="clojure.core/for" />
+    <item key="clojure.test.check.clojure-test/defspec" resolves-as="clojure.test/deftest" />
     <currentScheme>PROJECT</currentScheme>
   </component>
 </project>
