@@ -2,6 +2,8 @@
 <project version="4">
   <component name="ClojureProjectResolveSettings">
     <item key="clojure.test.check.properties/for-all" resolves-as="clojure.core/for" />
+    <item key="com.wsscode.pathom3.connect.operation/defresolver" resolves-as="clojure.core/defn" />
+    <item key="com.fulcrologic.guardrails.core/&gt;defn" resolves-as="clojure.core/defn" />
     <item key="clojure.test.check.clojure-test/defspec" resolves-as="clojure.test/deftest" />
     <currentScheme>PROJECT</currentScheme>
   </component>
