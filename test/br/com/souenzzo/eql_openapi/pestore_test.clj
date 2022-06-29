@@ -1,6 +1,8 @@
 (ns br.com.souenzzo.eql-openapi.pestore-test
-  (:refer-clojure :exclude [send])
   (:require [br.com.souenzzo.ring-http-client :as rhc]
+            [br.com.souenzzo.ring-http-client.java-net-http]
+            [br.com.souenzzo.ring-http-client.pedestal :as rhc.pedestal]
+            [br.com.souenzzo.ring-openapi :as ro]
             [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.string :as string]
@@ -10,113 +12,91 @@
             [com.wsscode.pathom3.interface.eql :as p.eql]
             [io.pedestal.http :as http]
             [io.pedestal.http.route :as route]
-            [io.pedestal.test :refer [response-for]]
-            [midje.sweet :refer [=> fact]])
-  (:import (java.net URLEncoder)
-           (java.net.http HttpClient HttpRequest)
-           (java.nio.charset StandardCharsets)))
+            [midje.sweet :refer [=> fact]]
+            [ring.core.protocols :as rcp])
+  (:import (java.io PipedInputStream PipedOutputStream)))
+
 (set! *warn-on-reflection* true)
+
 (def ring-keys
   [;; DEPRECATED
    #_:character-encoding #_:content-length #_:content-type
    :body :headers :protocol :query-string :remote-addr :request-method :scheme :server-name :server-port
    :ssl-client-cert :uri])
+
+(defn body-as-reader
+  [{:keys [body]
+    :as   ring-response}]
+  (let [in (PipedInputStream.)]
+    (with-open [output-stream (PipedOutputStream. in)]
+      (rcp/write-body-to-stream body ring-response output-stream))
+    (io/reader in)))
+
+(defn resolvers-for
+  [{::keys    [base-name]
+    ::ro/keys [openapi]
+    :as       opts}]
+  (concat [(pco/resolver `listPets
+             {::pco/output [:petstore.operation/listPets]}
+             (fn [{::keys [http-client]} _]
+               (let [-raw (-> (rhc/send http-client (ro/ring-request-for
+                                                      (assoc opts ::ro/operation-id "listPets")))
+                            body-as-reader
+                            json/read)]
+                 {:petstore.operation/listPets {:petstore.components.schemas.Pets/-raw -raw}})))
+           (pco/resolver `showPetById
+             {::pco/input  [:petstore.operation.showPetById/petId]
+              ::pco/output [:petstore.operation/showPetById]}
+             (fn [{::keys [http-client]} {:petstore.operation.showPetById/keys [petId]}]
+               (let [-raw (-> (rhc/send http-client (ro/ring-request-for (assoc opts
+                                                                           ::ro/operation-id "showPetById"
+                                                                           ::ro/path-params {:petId petId})))
+                            body-as-reader
+                            json/read)]
+                 {:petstore.operation/showPetById {:petstore.components.schemas.Pet/-raw -raw}})))]
+    (map pco/resolver
+      (for [[ident schema] (get-in openapi ["components" "schemas"])
+            :let [kw (keyword
+                       (string/join "."
+                         [base-name "components" "schemas" ident])
+                       "-raw")
+                  {:strs [properties items]} schema]
+            operation (cond
+                        properties (for [[ident _] properties
+                                         :let [output (keyword
+                                                        (namespace kw)
+                                                        ident)]]
+                                     {::pco/op-name (gensym)
+                                      ::pco/input   [kw]
+                                      ::pco/resolve (fn [env input]
+                                                      (let []
+                                                        (when-let [[_ v] (find (get input kw) ident)]
+                                                          {output v})))
+                                      ::pco/output  [output]})
+                        items (let [output (keyword
+                                             (string/join "."
+                                               [base-name "components" "schemas"])
+                                             ident)
+                                    new-raw (keyword
+                                              (string/join "."
+                                                [base-name "components" "schemas"
+                                                 (last (string/split (get items "$ref") #"/"))])
+                                              "-raw")]
+                                [{::pco/op-name (gensym)
+                                  ::pco/input   [kw]
+                                  ::pco/resolve (fn [env input]
+                                                  {output (mapv (fn [-raw]
+                                                                  {new-raw -raw})
+                                                            (get input kw))})
+                                  ::pco/output  [output]}])
+                        :else [schema])]
+        operation))))
+
+
 (def v3-petstore
   (-> (io/file "OpenAPI-Specification" "examples" "v3.0" "petstore.json")
     io/reader
     json/read))
-
-
-(defn ^HttpClient ->http-client
-  [{::http/keys [service-fn]}]
-  (proxy [HttpClient] []
-    (send [^HttpRequest http-request body-handler]
-      (let [body-publisher (.orElse (.bodyPublisher http-request) nil)
-            {:keys [status body headers]} (apply response-for service-fn
-                                            (or (some-> (.method http-request)
-                                                  string/lower-case
-                                                  keyword)
-                                              :get)
-                                            (str (.uri http-request))
-                                            :headers (.map (.headers http-request))
-                                            (concat (when body-publisher)
-                                              [:body body-publisher]))]
-        (rhc/ring-response->http-response {:status  status
-                                           :headers headers
-                                           :body    (io/input-stream (.getBytes (str body)))}
-          body-handler)))))
-
-
-(defn ring-request-for
-  [{:strs [paths]} operation-id & {:keys [path-params query-params]}]
-  (let [{:strs  [parameters]
-         ::keys [method path]} (or (first (for [[path opts] paths
-                                                [method {:strs [operationId]
-                                                         :as   operation}] opts
-                                                :when (= operation-id operationId)]
-                                            (assoc operation
-                                              ::method method
-                                              ::path path)))
-                                 (throw (ex-info (str "Can't find " (pr-str operation-id))
-                                          {:cognitect.anomalies/category :cognitect.anomalies/incorrect
-                                           :operation-id                 operation-id})))
-        {:keys [in-path in-query]} (group-by (fn [{:strs [in]}] (keyword (str "in-" in)))
-                                     parameters)
-        path (reduce (fn [path {:strs [name required]}]
-                       (when (and required
-                               (not (contains? path-params (keyword name))))
-                         (throw (ex-info (str "Missing " (pr-str name))
-                                  {:cognitect.anomalies/category :cognitect.anomalies/incorrect})))
-                       (if-let [[_ v] (find path-params (keyword name))]
-                         (string/replace path
-                           (re-pattern (str "\\{" name "}"))
-                           (str v))
-                         path))
-               path
-               in-path)
-        query (reduce
-                (fn [query {:strs [name required]}]
-                  (when (and required
-                          (not (contains? query-params (keyword name))))
-                    (throw (ex-info (str "Missing " (pr-str name))
-                             {:cognitect.anomalies/category :cognitect.anomalies/incorrect})))
-                  (if-let [[_ v] (find query-params (keyword name))]
-                    (assoc query name v)
-                    query))
-
-                {}
-                in-query)]
-    (merge {:request-method (keyword (string/lower-case method))
-            :uri            path}
-      (when (seq query)
-        {:query-string (string/join "&"
-                         (map (fn [[k v]]
-                                (str (URLEncoder/encode (str k)
-                                       StandardCharsets/UTF_8)
-                                  "=" (URLEncoder/encode (str v)
-                                        StandardCharsets/UTF_8)))
-                           query))}))))
-
-(deftest ring-request-for-test
-  (fact
-    (ring-request-for v3-petstore "listPets")
-    => {:request-method :get
-        :uri            "/pets"})
-  (fact
-    (ring-request-for v3-petstore "listPets"
-      :query-params {:limit 42})
-    => {:request-method :get
-        :query-string   "limit=42"
-        :uri            "/pets"})
-  (fact
-    (ring-request-for v3-petstore "createPets")
-    => {:request-method :post
-        :uri            "/pets"})
-  (fact
-    (ring-request-for v3-petstore "showPetById"
-      :path-params {:petId "42"})
-    => {:request-method :get
-        :uri            "/pets/42"}))
 
 (defn petstore-service
   [{::keys []
@@ -153,58 +133,18 @@
           ::http/routes routes)
       http/default-interceptors)))
 
-(pco/defresolver listPets [{::keys [http-client]} {::keys []}]
-  {::pco/output [:petstore.operation/listPets]}
-  (let [-raw (-> (rhc/send http-client (ring-request-for v3-petstore "listPets"))
-               :body
-               io/reader
-               json/read)]
-    {:petstore.operation/listPets {:petstore.components.schemas.Pets/-raw -raw}}))
-
-(pco/defresolver showPetById [{::keys [http-client]} {:petstore.operation.showPetById/keys [petId]}]
-  {::pco/output [:petstore.operation/showPetById]}
-  (let [-raw (-> (rhc/send http-client (ring-request-for v3-petstore "showPetById"
-                                         :path-params {:petId petId}))
-               :body
-               io/reader
-               json/read)]
-    {:petstore.operation/showPetById {:petstore.components.schemas.Pet/-raw -raw}}))
-
-
-(pco/defresolver Pets [{:petstore.components.schemas.Pets/keys [-raw]}]
-  {::pco/output [:petstore.components.schemas/Pets]}
-  {:petstore.components.schemas/Pets (mapv (fn [pet]
-                                             {:petstore.components.schemas.Pet/-raw pet})
-                                       -raw)})
-
-
-(pco/defresolver Pet#id [{:petstore.components.schemas.Pet/keys [-raw]}]
-  {::pco/output [:petstore.components.schemas.Pet/id]}
-  (some-> -raw
-    (get "id")
-    (->> (array-map :petstore.components.schemas.Pet/id))))
-
-
-(pco/defresolver Pet#name [{:petstore.components.schemas.Pet/keys [-raw]}]
-  {::pco/output [:petstore.components.schemas.Pet/name]}
-  (some-> -raw
-    (get "name")
-    (->> (array-map :petstore.components.schemas.Pet/name))))
-
-
-(pco/defresolver Pet#tag [{:petstore.components.schemas.Pet/keys [-raw]}]
-  {::pco/output [:petstore.components.schemas.Pet/tag]}
-  (some-> -raw
-    (get "tag")
-    (->> (array-map :petstore.components.schemas.Pet/tag))))
 
 
 (deftest hello
-  (let [service-map (-> {}
-                      petstore-service
-                      http/create-servlet)
-        http-client (->http-client service-map)
-        env (pci/register {::http-client http-client} [listPets showPetById Pet#id Pet#name Pet#tag Pets])]
+  (let [{::rhc.pedestal/keys [http-client]
+         :as                 env} (-> {}
+                                    petstore-service
+                                    http/create-servlet
+                                    rhc.pedestal/create-ring-http-client)
+        env (pci/register (assoc env
+                            ::http-client http-client)
+              (resolvers-for {::ro/openapi v3-petstore
+                              ::base-name  "petstore"}))]
     (fact
       "listPets"
       (p.eql/process env [{:petstore.operation/listPets [{:petstore.components.schemas/Pets

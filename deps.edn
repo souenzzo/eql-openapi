@@ -3,6 +3,7 @@
  :aliases {:dev {:extra-paths ["dev" "test"]
                  :extra-deps  {com.wsscode/pathom3              {:mvn/version "2022.06.01-alpha"}
                                br.com.souenzzo/ring-http-client {:local/root "projects/ring-http-client"}
+                               br.com.souenzzo/ring-openapi     {:local/root "projects/ring-openapi"}
                                io.aviso/pretty                  {:mvn/version "1.1.1"}
                                io.pedestal/pedestal.service     {:mvn/version "0.5.10"}
                                javax.servlet/javax.servlet-api  {:mvn/version "4.0.1"}
