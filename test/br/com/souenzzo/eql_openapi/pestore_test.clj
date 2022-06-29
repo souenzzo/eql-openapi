@@ -4,6 +4,7 @@
             [br.com.souenzzo.ring-http-client.pedestal :as rhc.pedestal]
             [br.com.souenzzo.ring-openapi :as ro]
             [clojure.data.json :as json]
+            [br.com.souenzzo.eql-openapi :as eql-openapi]
             [clojure.java.io :as io]
             [clojure.string :as string]
             [clojure.test :refer [deftest]]
@@ -24,73 +25,98 @@
    :body :headers :protocol :query-string :remote-addr :request-method :scheme :server-name :server-port
    :ssl-client-cert :uri])
 
-(defn body-as-reader
+(defn body-as-json
   [{:keys [body]
     :as   ring-response}]
   (let [in (PipedInputStream.)]
     (with-open [output-stream (PipedOutputStream. in)]
       (rcp/write-body-to-stream body ring-response output-stream))
-    (io/reader in)))
+    (json/read (io/reader in))))
 
 (defn resolvers-for
-  [{::keys    [base-name]
+  [{::keys    [base-name http-client-fn]
     ::ro/keys [openapi]
     :as       opts}]
-  (concat [(pco/resolver `listPets
-             {::pco/output [:petstore.operation/listPets]}
-             (fn [{::keys [http-client]} _]
-               (let [-raw (-> (rhc/send http-client (ro/ring-request-for
-                                                      (assoc opts ::ro/operation-id "listPets")))
-                            body-as-reader
-                            json/read)]
-                 {:petstore.operation/listPets {:petstore.components.schemas.Pets/-raw -raw}})))
-           (pco/resolver `showPetById
-             {::pco/input  [:petstore.operation.showPetById/petId]
-              ::pco/output [:petstore.operation/showPetById]}
-             (fn [{::keys [http-client]} {:petstore.operation.showPetById/keys [petId]}]
-               (let [-raw (-> (rhc/send http-client (ro/ring-request-for (assoc opts
-                                                                           ::ro/operation-id "showPetById"
-                                                                           ::ro/path-params {:petId petId})))
-                            body-as-reader
-                            json/read)]
-                 {:petstore.operation/showPetById {:petstore.components.schemas.Pet/-raw -raw}})))]
-    (map pco/resolver
-      (for [[ident schema] (get-in openapi ["components" "schemas"])
-            :let [kw (keyword
-                       (string/join "."
-                         [base-name "components" "schemas" ident])
-                       "-raw")
-                  {:strs [properties items]} schema]
-            operation (cond
-                        properties (for [[ident _] properties
-                                         :let [output (keyword
-                                                        (namespace kw)
-                                                        ident)]]
-                                     {::pco/op-name (gensym)
-                                      ::pco/input   [kw]
-                                      ::pco/resolve (fn [env input]
-                                                      (let []
-                                                        (when-let [[_ v] (find (get input kw) ident)]
-                                                          {output v})))
-                                      ::pco/output  [output]})
-                        items (let [output (keyword
-                                             (string/join "."
-                                               [base-name "components" "schemas"])
-                                             ident)
-                                    new-raw (keyword
-                                              (string/join "."
-                                                [base-name "components" "schemas"
-                                                 (last (string/split (get items "$ref") #"/"))])
-                                              "-raw")]
-                                [{::pco/op-name (gensym)
-                                  ::pco/input   [kw]
-                                  ::pco/resolve (fn [env input]
-                                                  {output (mapv (fn [-raw]
-                                                                  {new-raw -raw})
-                                                            (get input kw))})
-                                  ::pco/output  [output]}])
-                        :else [schema])]
-        operation))))
+  (concat
+    (into []
+      (comp (filter (comp #{"get"} ::eql-openapi/method))
+        (map (fn [{::eql-openapi/keys [parameters]
+                   :strs              [responses operationId]}]
+               (let [base-ns (string/join "."
+                               [base-name "operation"])
+                     {:strs [default]} responses
+                     output-ident (keyword base-ns operationId)
+                     path-params (into {}
+                                   (comp
+                                     (filter (fn [{:strs [in]}]
+                                               (= in "path")))
+                                     (map (fn [{:strs [name]}]
+                                            [(keyword name)
+                                             (keyword (string/join "."
+                                                        [base-name "operation" operationId])
+                                               name)])))
+
+                                   parameters)]
+                 {::pco/op-name (symbol output-ident)
+                  ::pco/output  [output-ident]
+                  ::pco/input   (vec (vals path-params))
+                  ::pco/resolve (fn [env input]
+                                  (let [{:keys [status headers]
+                                         :as   response} (rhc/send (http-client-fn env)
+                                                           (ro/ring-request-for
+                                                             (assoc opts ::ro/operation-id operationId
+                                                               ::ro/path-params (into {}
+                                                                                  (keep (fn [[k ident]]
+                                                                                          (when-let [[_ v] (find input ident)]
+                                                                                            [k v])))
+                                                                                  path-params))))
+                                        {:strs [content]} (get responses (str status) default)
+                                        {:strs [schema]} (get content (get headers "Content-Type"))
+                                        kw (keyword (string/join "."
+                                                      [base-name (last (string/split (get schema "$ref") #"/"))])
+                                             "-raw")]
+                                    {output-ident {kw (body-as-json response)}}))})))
+        (map pco/resolver))
+      (eql-openapi/operations openapi))
+    (into []
+      (comp
+        (map (fn [[schema-name schema-object-or-reference]]
+               (let [schema-object (eql-openapi/dereference openapi schema-object-or-reference)
+                     schema-ident (keyword
+                                    (string/join "."
+                                      [base-name schema-name])
+                                    "-raw")
+                     {:strs [properties items]} schema-object]
+                 (cond
+                   properties (for [[property-name _] properties
+                                    :let [property-ident (keyword
+                                                           (namespace schema-ident)
+                                                           property-name)]]
+                                {::pco/op-name (symbol property-ident)
+                                 ::pco/input   [schema-ident]
+                                 ::pco/resolve (fn [env input]
+                                                 (let []
+                                                   (when-let [[_ v] (find (get input schema-ident) property-name)]
+                                                     {property-ident v})))
+                                 ::pco/output  [property-ident]})
+                   items (let [items-ident (keyword base-name schema-name)
+                               item-element-ident (keyword
+                                                    (string/join "."
+                                                      [base-name
+                                                       (last (string/split (get items "$ref") #"/"))])
+                                                    "-raw")]
+                           [{::pco/op-name (symbol items-ident)
+                             ::pco/input   [schema-ident]
+                             ::pco/resolve (fn [env input]
+                                             {items-ident (mapv (fn [-raw] {item-element-ident -raw})
+                                                            (get input schema-ident))})
+                             ::pco/output  [items-ident]}])
+                   :else (throw (ex-info (str "unknow schema: " (pr-str schema-name))
+                                  {:object schema-object
+                                   :ref    schema-object-or-reference}))))))
+        cat
+        (map pco/resolver))
+      (get-in openapi ["components" "schemas"]))))
 
 
 (def v3-petstore
@@ -99,8 +125,7 @@
     json/read))
 
 (defn petstore-service
-  [{::keys []
-    :as    service-map}]
+  [service-map]
   (let [routes #{["/pets" :get (fn [{:keys [query-params]}]
                                  (let [limit (some-> query-params
                                                :limit
@@ -120,11 +145,12 @@
                  ["/pets/:petId" :get (fn [{:keys [path-params]}]
                                         (let [pet-id (-> path-params
                                                        :petId)]
-                                          {:body   (-> {:id   0
-                                                        :name "Bisteca"
-                                                        :tag  "beagle"}
-                                                     json/write-str)
-                                           :status 202}))
+                                          {:body    (-> {:id   0
+                                                         :name "Bisteca"
+                                                         :tag  "beagle"}
+                                                      json/write-str)
+                                           :headers {"Content-Type" "application/json"}
+                                           :status  200}))
                   :route-name :showPetById]}]
     (-> (assoc service-map
           ::url-for (-> routes
@@ -135,7 +161,7 @@
 
 
 
-(deftest hello
+(deftest petstore-test
   (let [{::rhc.pedestal/keys [http-client]
          :as                 env} (-> {}
                                     petstore-service
@@ -144,19 +170,20 @@
         env (pci/register (assoc env
                             ::http-client http-client)
               (resolvers-for {::ro/openapi v3-petstore
+                              ::http-client-fn ::http-client
                               ::base-name  "petstore"}))]
     (fact
       "listPets"
-      (p.eql/process env [{:petstore.operation/listPets [{:petstore.components.schemas/Pets
-                                                          [:petstore.components.schemas.Pet/id
-                                                           :petstore.components.schemas.Pet/name]}]}])
-      => {:petstore.operation/listPets {:petstore.components.schemas/Pets [{:petstore.components.schemas.Pet/id   0
-                                                                            :petstore.components.schemas.Pet/name "Bisteca"}]}})
+      (p.eql/process env [{:petstore.operation/listPets [{:petstore/Pets
+                                                          [:petstore.Pet/id
+                                                           :petstore.Pet/name]}]}])
+      => {:petstore.operation/listPets {:petstore/Pets [{:petstore.Pet/id   0
+                                                         :petstore.Pet/name "Bisteca"}]}})
     (fact
       "showPetById"
       (p.eql/process env {:petstore.operation.showPetById/petId 42}
         [{:petstore.operation/showPetById
-          [:petstore.components.schemas.Pet/id
-           :petstore.components.schemas.Pet/name]}])
-      => {:petstore.operation/showPetById {:petstore.components.schemas.Pet/id   0
-                                           :petstore.components.schemas.Pet/name "Bisteca"}})))
+          [:petstore.Pet/id
+           :petstore.Pet/name]}])
+      => {:petstore.operation/showPetById {:petstore.Pet/id   0
+                                           :petstore.Pet/name "Bisteca"}})))
