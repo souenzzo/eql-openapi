@@ -21,10 +21,10 @@
                                      parameters)
         path (reduce (fn [path {:strs [name required]}]
                        (when (and required
-                               (not (contains? path-params (keyword name))))
-                         (throw (ex-info (str "Missing " (pr-str name) " in-path")
+                               (not (contains? path-params name)))
+                         (throw (ex-info (str "Missing " (pr-str name) " at path-params")
                                   {:cognitect.anomalies/category :cognitect.anomalies/incorrect})))
-                       (if-let [[_ v] (find path-params (keyword name))]
+                       (if-let [[_ v] (find path-params name)]
                          (string/replace path
                            (re-pattern (str "\\{" name "}"))
                            (str v))
@@ -35,9 +35,9 @@
                 (fn [query {:strs [name required]}]
                   (when (and required
                           (not (contains? query-params (keyword name))))
-                    (throw (ex-info (str "Missing " (pr-str name) " in-query")
+                    (throw (ex-info (str "Missing " (pr-str name)  " at query-params")
                              {:cognitect.anomalies/category :cognitect.anomalies/incorrect})))
-                  (if-let [[_ v] (find query-params (keyword name))]
+                  (if-let [[_ v] (find query-params name)]
                     (assoc query name v)
                     query))
 
