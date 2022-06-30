@@ -24,20 +24,26 @@
     (json/read (io/reader in))))
 
 (deftest petstore-test
-  (let [{::rhc.pedestal/keys [http-client]
+  (let [;; create an in-memory petstore service
+        ;; returns it as an http-client
+        {::rhc.pedestal/keys [http-client]
          :as                 env} (-> {}
                                     petstore/service
                                     http/create-servlet
                                     rhc.pedestal/create-ring-http-client)
-        env (pci/register (assoc env
-                            ::http-client http-client)
+        env (pci/register
+              ;; add the in-memory petstore http client to the context
+              (assoc env
+                ::http-client http-client)
+              ;; create the resolvers that map the OpenAPI HTTP API to pathom connect
               (poc/resolvers-for {::poc/openapi               petstore/spec-v3
                                   ::poc/context->http-client ::http-client
                                   ::poc/response->content    response->content
                                   ::poc/base-name            "petstore"}))]
     (fact
       "listPets"
-      (p.eql/process env [{:petstore.operation/listPets [{:petstore/Pets
+      (p.eql/process env [;; \/ name of HTTP endpoint      \/ name of returned entity
+                          {:petstore.operation/listPets [{:petstore/Pets
                                                           [:petstore.Pet/id
                                                            :petstore.Pet/name]}]}])
       => {:petstore.operation/listPets {:petstore/Pets [{:petstore.Pet/id   0
