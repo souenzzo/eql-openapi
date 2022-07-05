@@ -19,9 +19,9 @@
 
 (def *conduit
   (delay
-    (let [url "https://raw.githubusercontent.com/gothinkster/realworld/main/api/openapi.yml"]
+    (with-open [rdr (io/reader "https://raw.githubusercontent.com/gothinkster/realworld/main/api/openapi.yml")]
       (-> (Load. (.build (LoadSettings/builder)))
-        (.loadFromReader (io/reader url))))))
+        (.loadFromReader rdr)))))
 
 (deftest v3-petstore-test
   (fact
