@@ -78,7 +78,8 @@
    :body    (.body http-response)
    :headers (into {}
               (map (fn [[k vs]]
-                     [k (string/join "," vs)]))
+                     [(string/lower-case k)
+                      (string/join "," vs)]))
               (.map (.headers http-response)))})
 
 (defn ^HttpResponse ring-response->http-response

@@ -2,7 +2,6 @@
   (:require [br.com.souenzzo.pathom-openapi-connect :as poc]
             [br.com.souenzzo.pathom-openapi-connect.petstore :as petstore]
             [br.com.souenzzo.ring-http-client.pedestal :as rhc.pedestal]
-            [br.com.souenzzo.ring-openapi :as ro]
             [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.test :refer [deftest]]
@@ -13,11 +12,9 @@
             [ring.core.protocols :as rcp])
   (:import (java.io PipedInputStream PipedOutputStream)))
 
-
 (defn response->content
-  [env content
-   {:keys [body]
-    :as   ring-response}]
+  [env {:keys [body]
+        :as   ring-response}]
   (let [in (PipedInputStream.)]
     (with-open [output-stream (PipedOutputStream. in)]
       (rcp/write-body-to-stream body ring-response output-stream))
@@ -33,8 +30,7 @@
                                     rhc.pedestal/create-ring-http-client)
         env (pci/register
               ;; add the in-memory petstore http client to the context
-              (assoc env
-                ::http-client http-client)
+              (assoc env ::http-client http-client)
               ;; create the resolvers that map the OpenAPI HTTP API to pathom connect
               (poc/resolvers-for {::poc/openapi               petstore/spec-v3
                                   ::poc/context->http-client ::http-client

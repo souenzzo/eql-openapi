@@ -1,25 +1,32 @@
 (ns br.com.souenzzo.ring-http-client.pedestal
   (:require [br.com.souenzzo.ring-http-client :as rhc]
             [io.pedestal.test :refer [response-for]]
-            [io.pedestal.http :as http])
+            [io.pedestal.http :as http]
+            [clojure.string :as string])
   (:import (java.net URI)))
 
 (defn service-fn->http-client
   [service-fn]
   (reify rhc/RingHttpClient
-    (send [this {:keys [body headers query-string remote-addr request-method scheme server-name server-port uri]}]
-      (apply response-for service-fn
-        request-method
-        (str (URI. (some-> scheme name)
-               nil
-               (or server-name remote-addr)
-               (or server-port -1)
-               uri
-               query-string
-               nil))
-        (concat
-          (some-> body slurp (conj [:body]))
-          (some-> headers (conj [:headers])))))))
+    (send [this {:keys [body headers query-string remote-addr request-method scheme server-name server-port uri]
+                 :or   {server-port -1}}]
+      (-> (apply response-for service-fn
+            request-method
+            (str (URI. (some-> scheme name)
+                   nil
+                   (or server-name remote-addr)
+                   server-port
+                   uri
+                   query-string
+                   nil))
+            (concat
+              (some-> body slurp (conj [:body]))
+              (some-> headers (conj [:headers]))))
+        (update :headers (fn [headers]
+                           (into {}
+                             (map (fn [[k v]]
+                                    [(string/lower-case k) v]))
+                             headers)))))))
 
 
 (defn create-ring-http-client
