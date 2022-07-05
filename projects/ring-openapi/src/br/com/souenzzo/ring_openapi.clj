@@ -19,7 +19,8 @@
                                            :operation-id                 operation-id})))
         {:keys [in-path in-query]} (group-by (fn [{:strs [in]}] (keyword (str "in-" in)))
                                      parameters)
-        path (reduce (fn [path {:strs [name required]}]
+        path (reduce (fn [path {:strs [name required style]
+                                :or   {style "simple"}}]
                        (when (and required
                                (not (contains? path-params name)))
                          (throw (ex-info (str "Missing " (pr-str name) " at path-params")
@@ -32,10 +33,11 @@
                path
                in-path)
         query (reduce
-                (fn [query {:strs [name required]}]
+                (fn [query {:strs [name required style]
+                            :or   {style "form"}}]
                   (when (and required
                           (not (contains? query-params (keyword name))))
-                    (throw (ex-info (str "Missing " (pr-str name)  " at query-params")
+                    (throw (ex-info (str "Missing " (pr-str name) " at query-params")
                              {:cognitect.anomalies/category :cognitect.anomalies/incorrect})))
                   (if-let [[_ v] (find query-params name)]
                     (assoc query name v)
@@ -50,6 +52,11 @@
                          (map (fn [[k v]]
                                 (str (URLEncoder/encode (str k)
                                        StandardCharsets/UTF_8)
-                                  "=" (URLEncoder/encode (str v)
-                                        StandardCharsets/UTF_8)))
+                                  "=" (if (coll? v)
+                                        (string/join ","
+                                          (map #(URLEncoder/encode (str %)
+                                                  StandardCharsets/UTF_8)
+                                            v))
+                                        (URLEncoder/encode (str v)
+                                          StandardCharsets/UTF_8))))
                            query))}))))
