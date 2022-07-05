@@ -3,19 +3,18 @@
             [br.com.souenzzo.ring-http-client.java-net-http :as rhc.jnh]
             [clojure.data.json :as json]
             [clojure.java.io :as io]
+            [clojure.string :as string]
             [clojure.test :refer [deftest]]
             [io.pedestal.http :as http]
-            [io.pedestal.http.jetty.websockets :as ws]
-            [midje.sweet :refer [=> fact]]
-            [ring.core.protocols :as rcp]
             [io.pedestal.log :as log]
-            [clojure.core.async :as async]
-            [clojure.string :as string])
+            [midje.sweet :refer [=> fact]]
+            [ring.core.protocols :as rcp])
   (:import (java.lang AutoCloseable)
-           (org.eclipse.jetty.websocket.api Session WebSocketConnectionListener WebSocketListener RemoteEndpoint)
-           (java.net.http HttpClient WebSocket$Listener WebSocket)
            (java.net URI)
-           (org.eclipse.jetty.websocket.servlet ServletUpgradeResponse ServletUpgradeRequest)))
+           (java.net.http HttpClient WebSocket WebSocket$Listener)
+           (org.eclipse.jetty.servlet ServletContextHandler ServletHolder)
+           (org.eclipse.jetty.websocket.api Session UpgradeRequest WebSocketConnectionListener WebSocketListener)
+           (org.eclipse.jetty.websocket.servlet WebSocketCreator WebSocketServlet WebSocketServletFactory)))
 
 (set! *warn-on-reflection* true)
 
@@ -57,11 +56,11 @@
       (close [this]
         (http/stop server)))))
 
-(defn servlet-upgrade-request->ring-request
-  [^ServletUpgradeRequest request]
+(defn upgrade-request->ring-request
+  [^UpgradeRequest request]
   (let [headers (.getHeaders request)
-        path (.getRequestPath request)
         uri (.getRequestURI request)
+        path (.getPath uri)
         port (.getPort uri)]
     (merge {}
       (when-let [method (.getMethod request)]
@@ -85,58 +84,61 @@
       (when (pos? port)
         {:server-port port}))))
 
+(defn ^URI ring->uri
+  [{:keys [uri server-port server-name scheme query-string]}]
+  (URI. (some-> scheme name)
+    nil
+    server-name
+    server-port
+    uri
+    query-string
+    nil))
+
+(defn with-ws-endpoint
+  [^ServletContextHandler ctx path ^WebSocketCreator creator]
+  (.addServlet ctx (ServletHolder.
+                     (proxy [WebSocketServlet] []
+                       (configure [^WebSocketServletFactory factory]
+                         (.setCreator factory creator))))
+    (str path))
+  ctx)
 
 
 (deftest jetty-ws
-  (let [*ws-clients (atom {})
-        listener-fn (fn [^ServletUpgradeRequest req ^ServletUpgradeResponse res ws-map]
-                      (log/info :headers (into {}
-                                           (map (fn [[k vs]]
-                                                  [k (vec vs)]))
-                                           (.getHeaders req)))
-                      (reify
-                        WebSocketConnectionListener
+  (let [*ws-clients (atom #{})
+        creator (reify WebSocketCreator
+                  (createWebSocket [this req resp]
+                    (let [ring-request (upgrade-request->ring-request req)
+                          *conn (promise)]
+                      (reify WebSocketConnectionListener
                         (onWebSocketConnect [this ws-session]
                           (log/info :in "onWebSocketConnect"
                             :ws ws-session)
-                          (let [send-ch (async/chan)
-                                remote ^RemoteEndpoint (.getRemote ws-session)]
-                            ;; Let's process sends...
-                            (async/thread
-                              (loop []
-                                (log/info :waiting "again")
-                                (if-let [out-msg (and (.isOpen ws-session)
-                                                   (async/<!! send-ch))]
-                                  (do
-                                    (try
-                                      (ws/ws-send out-msg remote)
-                                      (catch Exception ex
-                                        (log/error :msg "Failed on ws-send"
-                                          :exception ex)))
-                                    (recur))
-                                  (.close ws-session))))
-                            (swap! *ws-clients assoc ws-session send-ch)
-                            (async/>!! send-ch "This will be a text message")))
+                          (deliver *conn ws-session)
+                          (swap! *ws-clients conj ws-session)
+                          @(.sendStringByFuture (.getRemote ^Session @*conn)
+                             "Hello"))
                         (onWebSocketClose [this status-code reason]
                           (log/info :in "onWebSocketClose"
                             :code status-code
-                            :reason reason))
+                            :reason reason)
+                          (swap! *ws-clients disj @*conn))
                         (onWebSocketError [this cause]
                           (log/error :in "onWebSocketError"
                             :exception cause))
                         WebSocketListener
                         (onWebSocketText [this msg]
                           (log/info :in "onWebSocketText"
-                            :msg msg))
+                            :msg msg)
+                          @(.sendStringByFuture (.getRemote ^Session @*conn)
+                             (str "echo - " ring-request)))
                         (onWebSocketBinary [this payload offset length]
                           (log/info :in "onWebSocketBinary"
-                            :payload (seq payload)))))
+                            :payload (seq payload)))))))
         service (-> {::http/type              :jetty
                      ::http/port              8080
                      ::http/routes            #{}
-                     ::http/container-options {:context-configurator #(ws/add-ws-endpoints % {"/ws" {}}
-                                                                        {:listener-fn listener-fn})}
-
+                     ::http/container-options {:context-configurator (fn [ctx] (with-ws-endpoint ctx "/ws" creator))}
                      ::http/join?             false}
                   http/default-interceptors)]
     (with-open [server (->server service)]
@@ -148,12 +150,13 @@
                                   (log/info :onOpen "??")
                                   (.request ws 1e3))
                                 (onText [this ws data last?]
-                                  (log/info :onText data :last? last)
-                                  #_(.request ^WebSocket ws 1))
+                                  (log/info :onText (str data)
+                                    :last? last?))
                                 (onBinary [this ws data last?]
                                   (log/info :onBinary data :last? last))
                                 (onClose [this ws status message]
-                                  (log/info :onClose message))
+                                  (log/info :onClose message
+                                    :status status))
                                 (onError [this ws ex]
                                   (log/error :onError "??"
                                     :exception ex))
@@ -163,14 +166,11 @@
                                   (log/info :onPong "??"))))
                             deref)]
         (try
-          (.sendText ws "hello" true)
-          (doseq [[^Session session channel] @*ws-clients
-                  :let [open? (.isOpen session)]]
-            (when open?
-              (async/>!! channel "world")))
+          @(.sendText ws "cleiton" true)
+          (doseq [^Session session @*ws-clients
+                  :when (.isOpen session)]
+            @(.sendStringByFuture (.getRemote session)
+               "wowo"))
           (Thread/sleep 1000)
           (finally
             (.sendClose ws 0 "bye")))))))
-
-
-
