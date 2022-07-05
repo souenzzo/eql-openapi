@@ -1,9 +1,10 @@
 (ns br.com.souenzzo.ring-openapi-test
-  (:require [clojure.test :refer [deftest]]
-            [br.com.souenzzo.ring-openapi :as ro]
-            [midje.sweet :refer [fact =>]]
+  (:require [br.com.souenzzo.ring-openapi :as ro]
             [clojure.data.json :as json]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [clojure.test :refer [deftest]]
+            [midje.sweet :refer [=> fact]])
+  (:import (org.snakeyaml.engine.v2.api Load LoadSettings)))
 
 (def v3-petstore
   (-> (io/file ".." ".." "OpenAPI-Specification" "examples" "v3.0" "petstore.json")
@@ -15,6 +16,12 @@
   (-> (io/file ".." ".." "OpenAPI-Specification" "examples" "v3.0" "petstore-expanded.json")
     io/reader
     json/read))
+
+(def *conduit
+  (delay
+    (let [url "https://raw.githubusercontent.com/gothinkster/realworld/main/api/openapi.yml"]
+      (-> (Load. (.build (LoadSettings/builder)))
+        (.loadFromReader (io/reader url))))))
 
 (deftest v3-petstore-test
   (fact
@@ -74,3 +81,16 @@
     => {:request-method :delete
         :uri            "/pets/42"}))
 
+(deftest conduit-test
+  (fact
+    (ro/ring-request-for {::ro/openapi      @*conduit
+                          ::ro/operation-id "GetArticles"})
+    => {:request-method :get :uri "/articles"})
+  (fact
+    (ro/ring-request-for {::ro/openapi      @*conduit
+                          ::ro/operation-id "GetArticlesFeed"})
+    => {:request-method :get :uri "/articles/feed"})
+  (fact
+    (ro/ring-request-for {::ro/openapi      @*conduit
+                          ::ro/operation-id "GetCurrentUser"})
+    => {:request-method :get :uri "/user"}))

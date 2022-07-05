@@ -11,13 +11,13 @@
                                                 [method {:strs [operationId]
                                                          :as   operation}] opts
                                                 :when (= operation-id operationId)]
-                                            (assoc operation
-                                              ::method method
-                                              ::path path)))
+                                            (into {::method method
+                                                   ::path path}
+                                              operation)))
                                  (throw (ex-info (str "Can't find " (pr-str operation-id))
                                           {:cognitect.anomalies/category :cognitect.anomalies/incorrect
                                            :operation-id                 operation-id})))
-        {:keys [in-path in-query]} (group-by (fn [{:strs [in]}] (keyword (str "in-" in)))
+        {:strs [in-path in-query]} (group-by (fn [{:strs [in]}] (str "in-" in))
                                      parameters)
         path (reduce (fn [path {:strs [name required style]
                                 :or   {style "simple"}}]
@@ -36,7 +36,7 @@
                 (fn [query {:strs [name required style]
                             :or   {style "form"}}]
                   (when (and required
-                          (not (contains? query-params (keyword name))))
+                          (not (contains? query-params name)))
                     (throw (ex-info (str "Missing " (pr-str name) " at query-params")
                              {:cognitect.anomalies/category :cognitect.anomalies/incorrect})))
                   (if-let [[_ v] (find query-params name)]
